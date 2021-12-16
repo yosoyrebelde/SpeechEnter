@@ -3,69 +3,168 @@ from pynput.keyboard import Key, Listener
 import pyaudio
 import json
 import os, sys
+from threading import Thread, Timer
+from PyQt5.QtWidgets import (QApplication, QMenu, 
+                             QAction, QSystemTrayIcon, 
+                             QMessageBox, QWidget,
+                             QLabel, QGridLayout)
+from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import Qt, QObject, pyqtSignal
 
 rate = 16000
 chunk = 4000
 rec_key = Key.space
 PRESSED = False
 STOPPED = False
+visual_inp_delay = 5
 
-def on_press(key):
-    global PRESSED
-    if key == rec_key:
-        PRESSED = True
+ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
 
-def on_release(key):
-    global PRESSED, STOPPED
-    if key == rec_key:
-        PRESSED = False
-    elif key == Key.esc:
+def path(file):
+    global ROOT_PATH
+    return f"{ROOT_PATH}\\{file}"
+
+def msg():
+    m = QMessageBox()
+    m.setWindowTitle("Info")
+    m.setText("Your text here!")
+    m.exec()
+
+class TrayUI:
+    def __init__(self):
+        self.tray = QSystemTrayIcon()
+        self.tray.setIcon(QIcon(path("icon.png")))
+        self.tray.setVisible(True)
+
+        self.a_quit = QAction("Quit")
+        self.a_quit.setIcon(QIcon(path("close.png")))
+        self.a_quit.triggered.connect(self.close)
+
+        self.menu = QMenu()
+        self.menu.addAction(self.a_quit)
+
+        self.tray.setContextMenu(self.menu)
+        self.menu.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tray.activated.connect(self.menu.exec_)
+
+        self.start_input_thread()
+
+        # TEST #
+        #self.v = VisualInput()
+
+    def start_input_thread(self):
+        self.inp_thread = VoiceRec()
+        self.inp_thread.gotText.connect(self.show_input_window)
+        self.inp_thread.start()
+
+    def show_input_window(self, text):
+        self.hide_input_window()
+        self.input_window = VisualInput()
+        self.input_window.text_mode(text)
+        self.timer = Timer(visual_inp_delay, self.input_window.close)
+        self.timer.start()
+
+    def hide_input_window(self):
+        try:
+            self.timer.cancel()
+            self.input_window.close()
+        except AttributeError:
+            pass
+
+    def close(self):
+        global STOPPED
         STOPPED = True
+        self.hide_input_window()
+        self.inp_thread.join()
+        QApplication.quit()
 
-def input():
-    global rec, stream
-    global PRESSED
-    stream.start_stream()
-    raw_data = bytes()
-    while PRESSED:
-        data = stream.read(chunk)
-        raw_data += data
-    stream.stop_stream()
-    if len(raw_data) > 0:
-        rec.AcceptWaveform(raw_data)
-        raw_text = rec.FinalResult()
-        raw_text = json.loads(raw_text)
-        raw_text = raw_text["text"]
-    return raw_text
+class VisualInput(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.setGeometry(700, 30, 100, 30)
+        self.show()
 
-if not os.path.exists(r"C:\py\speech\vosk-model-small-ru-0.22"):
-    print("Model not found.")
-    exit(1)
-model = Model(r"C:\py\speech\vosk-model-small-ru-0.22") 
+    def text_mode(self, text):
+        t = QLabel()
+        t.setText(text)
+        layout = QGridLayout()
+        layout.addWidget(t, 0, 0)
+        self.setLayout(layout)
 
-rec = KaldiRecognizer(model, rate)
-p = pyaudio.PyAudio()
-stream = p.open(
-    format=pyaudio.paInt16, 
-    channels=1, 
-    rate=rate, 
-    input=True, 
-    frames_per_buffer=chunk
-)
-listener = Listener(
-        on_press=on_press,
-        on_release=on_release
-)
-listener.start()
+    def wait_mode(self):
+        pass
 
-print("Ready!")
+class VoiceRec(QObject, Thread):
 
-try:
-    while not STOPPED:
-        if PRESSED:
-            print(input())
-finally:
-    listener.stop()
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
+    gotText = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        if not os.path.exists(path("vosk-model-small-ru-0.22")):
+            print("Model not found.")
+            exit(1)
+        self.model = Model(path("vosk-model-small-ru-0.22")) 
+
+        self.rec = KaldiRecognizer(self.model, rate)
+        self.p = pyaudio.PyAudio()
+        self.stream = self.p.open(
+            format=pyaudio.paInt16, 
+            channels=1, 
+            rate=rate, 
+            input=True, 
+            frames_per_buffer=chunk
+        )
+        self.listener = Listener(
+                on_press=self.on_press,
+                on_release=self.on_release
+        )
+        #print("Ready!")
+
+    def run(self):
+        self.listener.start()
+        try:
+            while not STOPPED:
+                if PRESSED:
+                    #print(self.record())
+                    text = self.record()
+                    self.gotText.emit(text)
+        finally:
+            self.listener.stop()
+            self.stream.stop_stream()
+            self.stream.close()
+            self.p.terminate()
+
+    def on_press(self, key):
+        global PRESSED
+        if key == rec_key:
+            PRESSED = True
+
+    def on_release(self, key):
+        global PRESSED, STOPPED
+        if key == rec_key:
+            PRESSED = False
+        #elif key == Key.esc:
+        #    STOPPED = True
+
+    def record(self):
+        global PRESSED
+        self.stream.start_stream()
+        raw_data = bytes()
+        while PRESSED:
+            data = self.stream.read(chunk)
+            raw_data += data
+        self.stream.stop_stream()
+        if len(raw_data) > 0:
+            self.rec.AcceptWaveform(raw_data)
+            raw_text = self.rec.FinalResult()
+            raw_text = json.loads(raw_text)
+            raw_text = raw_text["text"]
+        return raw_text
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    ui = TrayUI()
+    sys.exit(app.exec_())
