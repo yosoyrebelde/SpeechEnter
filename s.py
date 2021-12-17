@@ -3,13 +3,15 @@ from pynput.keyboard import Key, Listener
 import pyaudio
 import json
 import os, sys
+import re
 from threading import Thread, Timer
 from PyQt5.QtWidgets import (QApplication, QMenu, 
                              QAction, QSystemTrayIcon, 
                              QMessageBox, QWidget,
                              QLabel, QGridLayout)
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QGuiApplication
 from PyQt5.QtCore import Qt, QObject, pyqtSignal
+from collections import OrderedDict
 
 rate = 16000
 chunk = 4000
@@ -30,6 +32,25 @@ def msg():
     m.setText("Your text here!")
     m.exec()
 
+def text_post_proc(text):
+    # Replace
+    for key in list(repl.keys()):
+        if key in text:
+            text = text.split(key)
+            text = [elem.strip() for elem in text]
+            text = repl[key].join(text)
+    # Capitalize
+    inds = [m.end(0) for m in re.finditer(r"[.!?]\s", text)] + [len(text)]
+    text_l = []
+    fr = to = 0
+    for ind in inds:
+        fr = to
+        to = ind
+        text_l.append(text[fr:to])
+    text = [elem.capitalize() for elem in text_l]
+    text = ''.join(text)
+    return text
+
 class TrayUI:
     def __init__(self):
         self.tray = QSystemTrayIcon()
@@ -47,10 +68,8 @@ class TrayUI:
         self.menu.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tray.activated.connect(self.menu.exec_)
 
+        self.clipboard = QGuiApplication.clipboard()
         self.start_input_thread()
-
-        # TEST #
-        #self.v = VisualInput()
 
     def start_input_thread(self):
         self.inp_thread = VoiceRec()
@@ -59,6 +78,8 @@ class TrayUI:
 
     def show_input_window(self, text):
         self.hide_input_window()
+        text = text_post_proc(text)
+        self.clipboard.setText(text)
         self.input_window = VisualInput()
         self.input_window.text_mode(text)
         self.timer = Timer(visual_inp_delay, self.input_window.close)
@@ -70,6 +91,7 @@ class TrayUI:
             self.input_window.close()
         except AttributeError:
             pass
+        self.clipboard.clear()
 
     def close(self):
         global STOPPED
@@ -120,7 +142,7 @@ class VoiceRec(QObject, Thread):
                 on_press=self.on_press,
                 on_release=self.on_release
         )
-        #print("Ready!")
+        #print("Ready!") ###############
 
     def run(self):
         self.listener.start()
@@ -145,8 +167,6 @@ class VoiceRec(QObject, Thread):
         global PRESSED, STOPPED
         if key == rec_key:
             PRESSED = False
-        #elif key == Key.esc:
-        #    STOPPED = True
 
     def record(self):
         global PRESSED
@@ -162,6 +182,19 @@ class VoiceRec(QObject, Thread):
             raw_text = json.loads(raw_text)
             raw_text = raw_text["text"]
         return raw_text
+
+repl = OrderedDict({
+# Punctuation
+    'точка с запятой': '; ',
+    'точка': '. ',
+    'запятая': ', ',
+    'восклицательный знак': '! ',
+    'вопросительный знак': '? ',
+    'двоеточие': ': ',
+    'многоточие': '... ',
+    'тире': ' — ',
+    'дефис': '-',
+})
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
