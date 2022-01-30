@@ -1,5 +1,5 @@
 from vosk import Model, KaldiRecognizer
-from pynput.keyboard import Key, Listener
+import pynput.keyboard as keyboard
 import pyaudio
 import json
 import os, sys
@@ -15,9 +15,7 @@ from collections import OrderedDict
 
 rate = 16000
 chunk = 4000
-rec_key = Key.space
-PRESSED = False
-STOPPED = False
+rec_key = keyboard.Key.space
 visual_inp_delay = 5
 
 ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -25,12 +23,6 @@ ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
 def path(file):
     global ROOT_PATH
     return f"{ROOT_PATH}\\{file}"
-
-def msg():
-    m = QMessageBox()
-    m.setWindowTitle("Info")
-    m.setText("Your text here!")
-    m.exec()
 
 def text_post_proc(text):
     # Replace
@@ -53,6 +45,10 @@ def text_post_proc(text):
 
 class TrayUI:
     def __init__(self):
+        self.init_ui()
+        self.init_input()
+
+    def init_ui(self):
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(QIcon(path("icon.png")))
         self.tray.setVisible(True)
@@ -69,13 +65,15 @@ class TrayUI:
         self.tray.activated.connect(self.menu.exec_)
 
         self.clipboard = QGuiApplication.clipboard()
-        self.start_input_thread()
 
-    def start_input_thread(self):
-        self.inp_thread = VoiceRec()
-        self.inp_thread.gotText.connect(self.show_input_window)
-        self.inp_thread.start()
+    def init_input(self):
+        self.inp = VoiceRec(self.tray)
+        self.inp.gotText.connect(self.show_input_window)
 
+        title = "Ready!"
+        message = "The app is ready!"
+        self.tray.showMessage(title, message)
+        
     def show_input_window(self, text):
         self.hide_input_window()
         text = text_post_proc(text)
@@ -94,10 +92,8 @@ class TrayUI:
         self.clipboard.clear()
 
     def close(self):
-        global STOPPED
-        STOPPED = True
         self.hide_input_window()
-        self.inp_thread.join()
+        self.inp.close()
         QApplication.quit()
 
 class VisualInput(QWidget):
@@ -115,17 +111,45 @@ class VisualInput(QWidget):
         layout.addWidget(t, 0, 0)
         self.setLayout(layout)
 
-    def wait_mode(self):
-        pass
+class KeyListener(QObject):
 
-class VoiceRec(QObject, Thread):
+    pressed = pyqtSignal()
+
+    def __init__(self, parent_VoiceRec):
+        super().__init__()
+        self.setParent(parent_VoiceRec)
+
+        self.PRESSED = False
+
+        self.listener = keyboard.Listener(
+            on_press=self.on_press,
+            on_release=self.on_release
+        )
+        self.listener.start()
+
+    def on_press(self, key):
+        if key == rec_key:
+            if not self.PRESSED:
+                self.PRESSED = True
+                self.pressed.emit()
+
+    def on_release(self, key):
+        if key == rec_key:
+            self.PRESSED = False
+
+    def close(self):
+        self.listener.stop()
+
+class VoiceRec(QObject):
 
     gotText = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, parent_QSystemTrayIcon):
         super().__init__()
+        self.setParent(parent_QSystemTrayIcon)
+
         if not os.path.exists(path("vosk-model-small-ru-0.22")):
-            print("Model not found.")
+            #print("Model not found.")
             exit(1)
         self.model = Model(path("vosk-model-small-ru-0.22")) 
 
@@ -138,41 +162,13 @@ class VoiceRec(QObject, Thread):
             input=True, 
             frames_per_buffer=chunk
         )
-        self.listener = Listener(
-                on_press=self.on_press,
-                on_release=self.on_release
-        )
-        #print("Ready!") ###############
-
-    def run(self):
-        self.listener.start()
-        try:
-            while not STOPPED:
-                if PRESSED:
-                    #print(self.record())
-                    text = self.record()
-                    self.gotText.emit(text)
-        finally:
-            self.listener.stop()
-            self.stream.stop_stream()
-            self.stream.close()
-            self.p.terminate()
-
-    def on_press(self, key):
-        global PRESSED
-        if key == rec_key:
-            PRESSED = True
-
-    def on_release(self, key):
-        global PRESSED, STOPPED
-        if key == rec_key:
-            PRESSED = False
+        self.listener = KeyListener(self)
+        self.listener.pressed.connect(self.record)
 
     def record(self):
-        global PRESSED
         self.stream.start_stream()
         raw_data = bytes()
-        while PRESSED:
+        while self.listener.PRESSED:
             data = self.stream.read(chunk)
             raw_data += data
         self.stream.stop_stream()
@@ -181,7 +177,14 @@ class VoiceRec(QObject, Thread):
             raw_text = self.rec.FinalResult()
             raw_text = json.loads(raw_text)
             raw_text = raw_text["text"]
-        return raw_text
+            if raw_text:
+                self.gotText.emit(raw_text)
+
+    def close(self):
+        self.listener.close()
+        self.stream.stop_stream()
+        self.stream.close()
+        self.p.terminate()
 
 repl = OrderedDict({
 # Punctuation
