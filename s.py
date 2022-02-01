@@ -68,6 +68,7 @@ class TrayUI:
 
     def init_input(self):
         self.inp = VoiceRec(self.tray)
+        self.inp.pressed.connect(self.hide_input_window)
         self.inp.gotText.connect(self.show_input_window)
 
         title = "Ready!"
@@ -75,13 +76,13 @@ class TrayUI:
         self.tray.showMessage(title, message)
         
     def show_input_window(self, text):
-        self.hide_input_window()
-        text = text_post_proc(text)
-        self.clipboard.setText(text)
-        self.input_window = VisualInput()
-        self.input_window.text_mode(text)
-        self.timer = Timer(visual_inp_delay, self.input_window.close)
-        self.timer.start()
+        if text:
+            self.clipboard.clear()
+            text = text_post_proc(text)
+            self.clipboard.setText(text)
+            self.input_window = VisualInput(text)
+            self.timer = Timer(visual_inp_delay, self.input_window.close)
+            self.timer.start()
 
     def hide_input_window(self):
         try:
@@ -89,7 +90,6 @@ class TrayUI:
             self.input_window.close()
         except AttributeError:
             pass
-        self.clipboard.clear()
 
     def close(self):
         self.hide_input_window()
@@ -97,19 +97,21 @@ class TrayUI:
         QApplication.quit()
 
 class VisualInput(QWidget):
-    def __init__(self):
+    def __init__(self, text):
         super().__init__()
+
         self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.setGeometry(700, 30, 100, 30)
-        self.show()
+       
+        self.text = QLabel()
+        self.text.setText(text)
 
-    def text_mode(self, text):
-        t = QLabel()
-        t.setText(text)
-        layout = QGridLayout()
-        layout.addWidget(t, 0, 0)
-        self.setLayout(layout)
+        self.layout = QGridLayout()
+        self.layout.addWidget(self.text, 0, 0)
+        self.setLayout(self.layout)
+
+        self.show()
 
 class KeyListener(QObject):
 
@@ -142,6 +144,7 @@ class KeyListener(QObject):
 
 class VoiceRec(QObject):
 
+    pressed = pyqtSignal()
     gotText = pyqtSignal(str)
 
     def __init__(self, parent_QSystemTrayIcon):
@@ -166,6 +169,7 @@ class VoiceRec(QObject):
         self.listener.pressed.connect(self.record)
 
     def record(self):
+        self.pressed.emit()
         self.stream.start_stream()
         raw_data = bytes()
         while self.listener.PRESSED:
@@ -179,6 +183,8 @@ class VoiceRec(QObject):
             raw_text = raw_text["text"]
             if raw_text:
                 self.gotText.emit(raw_text)
+                return
+        self.gotText.emit('')
 
     def close(self):
         self.listener.close()
